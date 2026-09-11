@@ -23,6 +23,7 @@ import concurrent.futures
 from pathlib import Path
 import ochre
 import random
+from run_context import save_filename
 
 # OCHRE seeds the *global* NumPy RNG inside Dwelling.__init__ (see
 # ochre.Simulator.__init__ -> np.random.seed(seed)) and then immediately
@@ -43,10 +44,15 @@ _dwelling_init_lock = threading.Lock()
 # overwrite each other. OCHRE_FILENAME overrides this when set (used by
 # excel_ochre.py to give each Excel-triggered run its own name) -- unset,
 # manual runs behave exactly as before.
-filename = os.environ.get('OCHRE_FILENAME', 'HPWH_AdmissionControl_n95_testx8_cap8LU')
+filename = os.environ.get('OCHRE_FILENAME', 'HPWH_AdmissionControl_n95_testx8_cap8')
+
+# Hand this run's name off to the C1/C2/C3 analysis scripts (see
+# run_context.py) so they pick it up automatically instead of needing
+# their own hardcoded default kept in sync by hand.
+save_filename(filename)
 
 #"HPWH 50 Input Files", "HPWH 66 Input Files/bldg", "HPWH 80 Input Files", "HPWH All Input Files/bldg"
-Input_folder = "HPWH 50 Input Files"
+Input_folder = "All Portland Input Files"  # relative to this script's folder -- must contain each home's HPXML + in.schedules.csv
 
 # Original OCHRE defaults folder
 ochre_dir = Path(ochre.__file__).resolve().parent
@@ -92,15 +98,23 @@ count = 0
 # exists in determine_reserve_control() but has never been run/validated.
 # excel_ochre.py's RD-CF_event write-back assumes SHED; do not switch
 # this to LOAD without also updating that assumption.
-RESERVE_COMMAND = 'LOAD'
+RESERVE_COMMAND = 'SHED'
 
 # OCHRE_DISPATCH_TIME / OCHRE_DURATION_HR override these when set (used
 # by excel_ochre.py, sourced from the Excel sheet's Start/Stop cells) --
 # unset, manual runs use the same 15:00/1.5hr validated baseline as before.
-reserve_event = {
-    'dispatch_time': os.environ.get('OCHRE_DISPATCH_TIME', '15:00'),
-    'duration': float(os.environ.get('OCHRE_DURATION_HR', 1.5))   # hours
-}
+
+# reserve_event = {
+#     'dispatch_time': '15:00',
+#     'duration': 1.5   # 1.5 hr = 90 min event -- unchanged from the validated baseline
+# }
+
+# In HPWH_B3.py, replace the hardcoded block with:
+if 'reserve_event' not in globals():
+    reserve_event = {
+        'dispatch_time': '15:00',
+        'duration': 1.5   # 1.5 hr = 90 min event -- unchanged from the validated baseline
+    }
 
 # The single calendar day the reserve event happens on -- the LAST day of
 # the simulation. remove_first_day() strips every earlier day before
@@ -368,7 +382,11 @@ def compute_priority_order(phase1_results):
     admission-control loop below decides actual release timing
     dynamically from real-time fleet power, not from this ranking alone.
     """
-    return sorted(phase1_results, key=lambda r: r["temp_at_event_end"], reverse=True)
+    # Prioritizing units with warmer tank temperatures
+    # return sorted(phase1_results, key=lambda r: r["temp_at_event_end"], reverse=True)
+
+    # Prioritizing units with colder tank temperatures
+    return sorted(phase1_results, key=lambda r: r["temp_at_event_end"], reverse=False)
 
 #########################################
 # POWER-CAPPED ADMISSION CONTROL LOOP -- NEW (V3)
