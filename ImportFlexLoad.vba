@@ -132,10 +132,13 @@ Private Sub ImportERWH(xmlDoc As Object, ws As Worksheet, blockStart As Long)
 
 End Sub
 
+################
+# Additional loads will be added later
+################
+
 
 '------------------------------------
 ' Shared Control/Interop fields - Order 12-20 (offsets 11-19)
-' DataCnfrmnt / ShiftCnfrmnt stay numeric - no Yes/No conversion.
 '------------------------------------
 Private Sub ImportConnectivity(xmlDoc As Object, ws As Worksheet, blockStart As Long)
 
