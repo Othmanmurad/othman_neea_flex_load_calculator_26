@@ -12,8 +12,40 @@ HPWH/Ready_data/
 HPWH/Metadata/
 HPWH/HPWH Filtered/
 
-# Local last-run state (see HPWH/run_context.py) -- which B3 filename the
-# C1/C2/C3 scripts should inherit, not something to share across machines.
-HPWH/.last_run_filename
+# Local last-run state (see HPWH/run_context.py) -- which test the C scripts open,
+# not something to share across machines.
+HPWH/.last_*
+
+# PES paper (IEEE) work: results are simulation output, and the input folder is
+# a junction to HPWH's input files.
+pes_paper/Ready_data/
+pes_paper/*Input Files*/
+pes_paper/*Input Files*
+pes_paper/.last_*
+
+# Other FLC loads (ERWH, AC, HEAT, EV, Battery, Dryer): results are simulation output, and the
+# input folders are junctions to HPWH's input files.
+/ERWH/Ready_data/
+/AC/Ready_data/
+/HEAT/Ready_data/
+/EV/Ready_data/
+/Battery/Ready_data/
+/Dryer/Ready_data/
+/ERWH/*Input Files*
+/AC/*Input Files*
+/HEAT/*Input Files*
+/EV/*Input Files*
+/Battery/*Input Files*
+/Dryer/*Input Files*
+/ERWH/.last_*
+/AC/.last_*
+/HEAT/.last_*
+/EV/.last_*
+/Battery/.last_*
+/Dryer/.last_*
+
+# FLC Combo (all loads together): results are simulation output.
+/Combo/Ready_data/
+/Combo/.last_*
 
 ~$FL Reserve Calculator.xlsm

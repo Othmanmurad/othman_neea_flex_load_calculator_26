@@ -1,27 +1,70 @@
 # -*- coding: utf-8 -*-
 """
-Shared last-run filename hand-off between the B (simulation) and C
-(analysis) scripts. A B script (V3/V4/V5) calls save_filename() with
-whatever `filename` it ended up using (env override or its own hardcoded
-default); a C script (C1/C2/C3) calls load_filename() to pick that same
-name back up, so it stops needing its own hardcoded default kept in sync
-by hand. Persisted to a small file (not an env var) so this also works
-across separate manual runs, not just within one excel_ochre.py process.
+Last-run hand-off between the B (simulation) and C (results) scripts. HPWH_B1_gen_dec.py and
+HPWH_B2_gen_inc.py save the test name and input folder they used; HPWH_C1_gen_dec_res.py and
+HPWH_C2_gen_inc_res.py read the test name back, so they open the latest run automatically.
+
+`pipeline` ("FLC_DEC" or "FLC_INC") keeps the DEC and INC values in separate small files
+(.last_run_filename_FLC_DEC, ...), so the two never overwrite each other.
 """
 
 import os
+import json
 
-_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_run_filename")
+_STATE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def save_filename(name):
-    with open(_STATE_FILE, "w") as f:
+def _state_file(pipeline=None):
+    suffix = f"_{pipeline}" if pipeline else ""
+    return os.path.join(_STATE_DIR, f".last_run_filename{suffix}")
+
+
+def save_filename(name, pipeline=None):
+    with open(_state_file(pipeline), "w") as f:
         f.write(name)
 
 
-def load_filename(default):
+def load_filename(default, pipeline=None):
     try:
-        with open(_STATE_FILE) as f:
+        with open(_state_file(pipeline)) as f:
+            saved = f.read().strip()
+        return saved or default
+    except FileNotFoundError:
+        return default
+
+
+def _reserve_event_file(pipeline=None):
+    suffix = f"_{pipeline}" if pipeline else ""
+    return os.path.join(_STATE_DIR, f".last_reserve_event{suffix}.json")
+
+
+def save_reserve_event(reserve_event, pipeline=None):
+    with open(_reserve_event_file(pipeline), "w") as f:
+        json.dump(reserve_event, f)
+
+
+def load_reserve_event(default, pipeline=None):
+    try:
+        with open(_reserve_event_file(pipeline)) as f:
+            saved = json.load(f)
+        return saved or default
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def _input_folder_file(pipeline=None):
+    suffix = f"_{pipeline}" if pipeline else ""
+    return os.path.join(_STATE_DIR, f".last_input_folder{suffix}")
+
+
+def save_input_folder(name, pipeline=None):
+    with open(_input_folder_file(pipeline), "w") as f:
+        f.write(name)
+
+
+def load_input_folder(default, pipeline=None):
+    try:
+        with open(_input_folder_file(pipeline)) as f:
             saved = f.read().strip()
         return saved or default
     except FileNotFoundError:
