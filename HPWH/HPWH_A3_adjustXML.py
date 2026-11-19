@@ -97,6 +97,14 @@ HPWH_SIZE_DISTRIB_CONFIG = {
     ]
 }
 
+# One tank size for every HPWH (set_HPWH_size): 50, 66 or 80 gallons.
+TANK_SIZE_GAL = 80
+HPWH_TANK_SIZES = {
+    50: {"TankVolume": 50.0, "HeatingCapacity": 6887.0, "UniformEnergyFactor": 3.78},
+    66: {"TankVolume": 66.0, "HeatingCapacity": 7203.0, "UniformEnergyFactor": 3.95},
+    80: {"TankVolume": 80.0, "HeatingCapacity": 7334.0, "UniformEnergyFactor": 3.98},
+}
+
 HPWH_MODEL_CONFIG = {
     "HPWH_model": [
         # AOSmith HPTU-50N
@@ -207,6 +215,28 @@ def distribute_HPWH_size(root, config):
                     new_ef_elem.text = str(chosen_update["UniformEnergyFactor"])
                     idx = list(elem).index(vol_elem)
                     elem.insert(idx + 2, new_ef_elem)
+
+def set_HPWH_size(root, size_gal):
+    """Gives every HPWH the same tank size (50, 66 or 80 gal), with that size's capacity and UEF."""
+    ns_match = re.match(r'\{.*\}', root.tag)
+    ns_bracket = ns_match.group(0) if ns_match else ''
+    values = HPWH_TANK_SIZES[size_gal]
+
+    for elem in root.iter():
+        if elem.tag.split('}')[-1] != 'WaterHeatingSystem':
+            continue
+        children = {c.tag.split('}')[-1]: c for c in elem}
+        type_elem = children.get('WaterHeaterType')
+        vol_elem = children.get('TankVolume')
+        if type_elem is None or type_elem.text != 'heat pump water heater' or vol_elem is None:
+            continue
+        # Update each value; a missing one is added right after TankVolume.
+        for k, tag in enumerate(["TankVolume", "HeatingCapacity", "UniformEnergyFactor"]):
+            child = children.get(tag)
+            if child is None:
+                child = ET.Element(f'{ns_bracket}{tag}')
+                elem.insert(list(elem).index(vol_elem) + k, child)
+            child.text = str(values[tag])
 
 def convert_to_HPWH(root, config):
     """Converts ERWH, Natural Gas, and Tankless heaters to an HPWH."""
@@ -428,6 +458,7 @@ if __name__ == "__main__":
                 
                 # update_ERWH_size(root, HPWH_SIZE_CONFIG)
                 convert_to_HPWH(root, HPWH_CONVERSION_CONFIG)
+                set_HPWH_size(root, TANK_SIZE_GAL)  # every HPWH gets the TANK_SIZE_GAL tank
                 # distribute_HPWH_size(root, HPWH_SIZE_DISTRIB_CONFIG)
                 # convert_single_model(root, HPWH_MODEL_CONFIG)
                 

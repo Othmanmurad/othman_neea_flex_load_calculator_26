@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Results for HPWH_B1_gen_dec.py: fleet plots, per-unit statistics (delta_P, energy, response
-time, time in LOAD), and one summary text file.
+Results for HPWH_B1_gen_dec.py: fleet plots, per-unit metrics (delta_P, energy, response
+time, time in LOAD), capacity factor, and one summary text file.
 """
 
 import os
@@ -16,31 +16,51 @@ from run_context import load_filename
 # SETTINGS (the only block that differs from HPWH_C2_gen_inc_res.py)
 #########################################
 
+LOAD_NAME = "HPWH"
 PIPELINE = "FLC_DEC"
-DEFAULT_TEST = "FLC_DEC_Test"
-MODE = "DEC - Load-Up"
+TEST_NAME = "FLC_HPWH_DEC_MAX-LU"  # test folder in Ready_data to analyse; "" = the last test simulated
+MODE = "DEC - LOAD"             # the level part is replaced by the level in the test's config
 STATE = "LOAD"                  # the reserve state a dispatched unit is commanded into
 SIGN = 1                        # change = SIGN * (controlled - baseline), so it is positive when working
 CHANGE_NAME = "Added load"
 CHANGE_YLABEL = "Change in consumption vs. baseline (kW)"
-CHANGE_LEGEND = "delta_p(t) = controlled - baseline"
 PHASE_NAMES = ("Ramp-up", "Hold", "Ramp-down")
 
-ON_KW = 0.1                     # a unit counts as running when its WH power is above this
+POWER = "Water Heating Electric Power (kW)"
+DEVICE_LABEL = "HPWH"        # used in plot titles
+ON_KW = 0.1                     # a unit counts as running when its power is above this
 P_RATED_KW = 0.5                # rated heat pump power per unit (OCHRE default HPWH Power = 500 W)
-LOAD_SETPOINT_C = 60.0          # DEC load-up setpoint (same as MAX_TANK_TEMP_C in HPWH_B1_gen_dec.py)
-LOAD_DEADBAND_C = 2.0           # DEC deadband (C); a unit can load up if its tank is colder than setpoint - deadband
+LOAD_DEADBAND_C = 2.0           # DEC: a unit can load up if its tank is colder than load setpoint - this
 PLOT_MARGIN_HR = 2.0            # hours shown before and after the event in the zoomed plots
+PLOT_AVG_MIN = 15              # averaging window (min) for the _avg plots
+AVG_MIN = 10                    # minutes in the rolling average used for the peak and hold time
+HOLD_FRACTION = 0.9             # "held" = the averaged fleet change stays at or above this share of its peak
 PARTICIPATION_RATE = 1.0        # Flex Load Capacity inputs
 REACHABLE_RATE = 1.0
+
+
+def f_to_c(temp_f):
+    return (temp_f - 32) * 5 / 9
+
+
+def cf_baseline(base):
+    """DEC: idle units with tank below the load-up turn-on temperature can load up, so P_i is P_rated - P."""
+    p = base[POWER]
+    if "level_setpoint_f" in config:
+        limit_c = f_to_c(config["level_setpoint_f"] - config["level_deadband_f"])
+    else:
+        limit_c = config.get("load_temp_c", 60.0) - LOAD_DEADBAND_C
+    able = (p <= ON_KW) & (base["Hot Water Outlet Temperature (C)"] < limit_c)
+    cf = (P_RATED_KW - p).where(able, 0).groupby(base["Time"]).sum() / (P_RATED_KW * N)
+    return cf, f"idle units with tank < {limit_c:.1f} C"
+
 
 #########################################
 # LOAD DATA
 #########################################
 
-WH = "Water Heating Electric Power (kW)"
 WORKING_DIR = os.path.dirname(os.path.abspath(__file__))
-test_name = os.environ.get('OCHRE_FILENAME') or load_filename(DEFAULT_TEST, pipeline=PIPELINE)
+test_name = os.environ.get('OCHRE_FILENAME') or TEST_NAME or load_filename("", pipeline=PIPELINE)
 results_dir = os.path.join(WORKING_DIR, "Ready_data", test_name)
 plots_dir = os.path.join(results_dir, "plots")
 os.makedirs(plots_dir, exist_ok=True)
@@ -52,6 +72,8 @@ def run_file(suffix):
 
 with open(run_file("_config.json")) as f:
     config = json.load(f)
+STATE = config.get('level', STATE)  # the level this test actually used
+MODE = f"{MODE.split(' - ')[0]} - {STATE}"
 dispatch_t = pd.to_datetime(config["dispatch_start"])
 event_end = pd.to_datetime(config["event_end"])
 TARGET_KW = config["target_kw"]
@@ -65,10 +87,20 @@ episodes = pd.read_csv(run_file("_episodes.csv"), parse_dates=["Command_Time", "
 N = ctrl["Home"].nunique()
 dt_hr = ctrl.loc[ctrl["Home"] == ctrl["Home"].iloc[0], "Time"].diff().median().total_seconds() / 3600
 
-base_fleet = base.groupby("Time")[WH].sum()
-ctrl_fleet = ctrl.groupby("Time")[WH].sum()
+base_fleet = base.groupby("Time")[POWER].sum()
+ctrl_fleet = ctrl.groupby("Time")[POWER].sum()
 change = SIGN * (ctrl_fleet - base_fleet)  # fleet delta_p (DEC) or reduction (INC)
 in_event = (change.index >= dispatch_t) & (change.index < event_end)
+RAMP_MIN = float(config.get('ramp_up_min', 10))  # ramp period after dispatch; the target is held after it
+in_hold = (change.index >= dispatch_t + pd.Timedelta(minutes=RAMP_MIN)) & (change.index < event_end)
+T_RES_MIN = (change.index[1] - change.index[0]).total_seconds() / 60  # minutes per row
+
+def hold_time(frac=0.9):
+    """Minutes the 15-min average stays >= frac x the hold-period average: longest unbroken stretch, and in total."""
+    ok = change.rolling(PLOT_AVG_MIN, center=True, min_periods=1).mean()[in_hold] >= frac * change[in_hold].mean()
+    continuous = int(ok.groupby((~ok).cumsum()).sum().max())  # longest run of True values
+    return continuous * T_RES_MIN, int(ok.sum()) * T_RES_MIN, int(in_hold.sum()) * T_RES_MIN
+change_avg = change.rolling(f"{AVG_MIN}min").mean()  # trailing average
 
 #########################################
 # PHASES: ramp (until the target is first reached), hold (until event end), ramp back (until all released)
@@ -94,15 +126,15 @@ def phase_of(t):
 
 def unit_metrics():
     """For each command: change at response, energy while in the state, response time, and time in the state."""
-    ctrl_p = ctrl.pivot(index="Time", columns="Home", values=WH)
-    base_p = base.pivot(index="Time", columns="Home", values=WH)
+    ctrl_p = ctrl.pivot(index="Time", columns="Home", values=POWER)
+    base_p = base.pivot(index="Time", columns="Home", values=POWER)
     rows = []
     for ep in episodes.itertuples():
         steps = (ctrl_p.index >= ep.Command_Time) & (ctrl_p.index < ep.End_Time)
         p_ctrl = ctrl_p.loc[steps, ep.Home]
         d = SIGN * (p_ctrl - base_p.loc[steps, ep.Home])
-        # Responded = the unit turned on (DEC) or turned off (INC) after the command.
-        responded = p_ctrl > ON_KW if SIGN > 0 else p_ctrl <= ON_KW
+        # Responded = the unit's power moved more than ON_KW from its baseline, in the commanded direction.
+        responded = d > ON_KW
         t_resp = responded.idxmax() if responded.any() else None
         response = (t_resp - ep.Command_Time).total_seconds() / 60 if t_resp is not None else np.nan
         # Delta_P at response = the unit's power change in the step it responded.
@@ -110,7 +142,8 @@ def unit_metrics():
         rows.append({"delta_p_kw": dp_resp, "peak_delta_p_kw": d.max(), "energy_kwh": d.sum() * dt_hr,
                      "response_min": response, "time_in_state_min": steps.sum() * dt_hr * 60,
                      "phase": phase_of(ep.Command_Time)})
-    out = pd.concat([episodes.reset_index(drop=True), pd.DataFrame(rows)], axis=1)
+    cols = ["delta_p_kw", "peak_delta_p_kw", "energy_kwh", "response_min", "time_in_state_min", "phase"]
+    out = pd.concat([episodes.reset_index(drop=True), pd.DataFrame(rows, columns=cols)], axis=1)
     out.insert(1, "Command_No", out.groupby("Home").cumcount() + 1)
     return out
 
@@ -128,24 +161,23 @@ def first_responder(df):
 # FLEET METRICS
 #########################################
 
-def timing_stats():
-    """Minutes to first reach the target, minutes held continuously after that, and % of time in band."""
-    s = change[in_event]
-    ok = s >= TARGET_KW - BAND_KW
-    if not ok.any():
-        return None, None, np.nan
-    first = s[ok].index[0]
-    after = s[s.index >= first]
-    dropped = after < TARGET_KW - BAND_KW
-    hold_end = after[dropped].index[0] if dropped.any() else event_end
-    pct_in_band = after.between(TARGET_KW - BAND_KW, TARGET_KW + BAND_KW).mean() * 100
-    return (first - dispatch_t).total_seconds() / 60, (hold_end - first).total_seconds() / 60, pct_in_band
+def peak_hold_stats():
+    """Peak of the averaged fleet change in the event, and the longest continuous time it stayed above
+    HOLD_FRACTION of that peak."""
+    s = change_avg[(change_avg.index >= dispatch_t) & (change_avg.index < event_end)].dropna()
+    peak, peak_t = s.max(), s.idxmax()
+    above = s >= HOLD_FRACTION * peak
+    longest = run = 0
+    for ok in above:
+        run = run + 1 if ok else 0
+        longest = max(longest, run)
+    return peak, peak_t, longest * dt_hr * 60
 
 
 def avg_running(df):
     """Average number of units drawing power during the event."""
     w = df[(df["Time"] >= dispatch_t) & (df["Time"] <= event_end)]
-    counts = w[w[WH] > ON_KW].groupby("Time").size().reindex(sorted(w["Time"].unique()), fill_value=0)
+    counts = w[w[POWER].abs() > ON_KW].groupby("Time").size().reindex(sorted(w["Time"].unique()), fill_value=0)
     return counts.mean()
 
 
@@ -154,8 +186,8 @@ def flex_load_capacity():
     sample = float(os.environ.get('OCHRE_SAMPLE') or N)
     out = {}
     for name, df in (("baseline", base), ("controlled", ctrl)):
-        w = df[(df["Time"] >= dispatch_t) & (df["Time"] < event_end) & (df[WH] > ON_KW)]
-        per_unit = w[WH].sum() * dt_hr / N
+        w = df[(df["Time"] >= dispatch_t) & (df["Time"] < event_end) & (df[POWER].abs() > ON_KW)]
+        per_unit = w[POWER].abs().sum() * dt_hr / N
         out[name] = (per_unit, per_unit * PARTICIPATION_RATE * REACHABLE_RATE * sample)
     return out, sample
 
@@ -184,45 +216,33 @@ def scale_to_data(ax, s):
     ax.set_ylim(min(0, lo) - pad, hi + pad)
 
 
-def plot_fleet_power_zoom():
+def smooth(s):
+    return s.rolling(PLOT_AVG_MIN, center=True, min_periods=1).mean()
+
+
+def plot_fleet_power_zoom(avg=False):
+    # avg=True: same plot with the PLOT_AVG_MIN centered average of each curve.
+    b, c = (smooth(base_fleet), smooth(ctrl_fleet)) if avg else (base_fleet, ctrl_fleet)
     lo, hi = dispatch_t - pd.Timedelta(hours=PLOT_MARGIN_HR), event_end + pd.Timedelta(hours=PLOT_MARGIN_HR)
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(base_fleet[lo:hi].index, base_fleet[lo:hi].values, color="#133CAD", linewidth=1.3, label='Baseline')
-    ax.plot(ctrl_fleet[lo:hi].index, ctrl_fleet[lo:hi].values, color="#ee5e0a", linestyle='--', linewidth=1.3, label='Controlled')
-    ax.set(title=f'Fleet Water Heater Activation ({MODE}) (N={N})', xlabel='Time', ylabel='Fleet Power (kW)')
+    ax.plot(b[lo:hi].index, b[lo:hi].values, color="#133CAD", linewidth=1.3, label='Baseline')
+    ax.plot(c[lo:hi].index, c[lo:hi].values, color="#ee5e0a", linestyle='--', linewidth=1.3, label='Controlled')
+    ax.set(title=f'Aggregated {DEVICE_LABEL}s Activation ({MODE}) (N={N}) (±2 hr of Event Window)', xlabel='Time', ylabel='Fleet Power (kW)')
     ax.legend(loc='upper left')
-    save(fig, ax, "fleet_activation_combined_plot", 1)
+    save(fig, ax, "fleet_activation_combined_plot" + ("_avg" if avg else ""), 1)
 
 
-def plot_fleet_power_day():
+def plot_fleet_power_day(avg=False):
+    b, c = (smooth(base_fleet), smooth(ctrl_fleet)) if avg else (base_fleet, ctrl_fleet)
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(base_fleet.index, base_fleet.values, color="#133CAD", linewidth=1.3, label='Baseline')
-    ax.plot(ctrl_fleet.index, ctrl_fleet.values, color="#ee5e0a", linestyle='--', linewidth=1.3, label='Controlled')
+    ax.plot(b.index, b.values, color="#133CAD", linewidth=1.3, label='Baseline')
+    ax.plot(c.index, c.values, color="#ee5e0a", linestyle='--', linewidth=1.3, label='Controlled')
     mark_event(ax)
     ax.axvspan(dispatch_t, event_end, color='red', alpha=0.1)
-    ax.set(title=f'Aggregated Fleet Water Heater Power During Reserve Service Event ({MODE}) (N={N})',
+    ax.set(title=f'Aggregated {DEVICE_LABEL}s Power During Reserve Service Event ({MODE}) (N={N})',
            xlabel='Time', ylabel='Fleet Power (kW)')
     ax.legend(loc='upper left')
-    save(fig, ax, "fleet_power_event_plot", 3)
-
-
-def plot_change(zoom):
-    lo, hi = change.index.min(), change.index.max()
-    if zoom:
-        lo, hi = dispatch_t - pd.Timedelta(hours=PLOT_MARGIN_HR), event_end + pd.Timedelta(hours=PLOT_MARGIN_HR)
-    s = change[lo:hi]
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.axvspan(dispatch_t, event_end, color='green', alpha=0.08, label='Event window')
-    ax.axvspan(event_end, hi, color='orange', alpha=0.08, label='Post-event')
-    ax.plot(s.index, s.values, color="#133CAD", linewidth=1.3, label=CHANGE_LEGEND)
-    ax.axhline(0, color='black', linewidth=0.8)
-    ax.axhline(TARGET_KW, color='black', linestyle='--', linewidth=1.3, label=f'Target = {TARGET_KW} kW')
-    mark_event(ax)
-    title = f'{CHANGE_NAME} vs. Target' if zoom else f'{CHANGE_NAME} Over the Full Day'
-    ax.set(title=f'{title} ({MODE}) (N={N})', xlabel='Time', ylabel=CHANGE_YLABEL, xlim=(lo, hi))
-    ax.legend(loc='upper left', fontsize=8)
-    scale_to_data(ax, s)
-    save(fig, ax, "deltaP" if zoom else "fleet_power_24hr_plot", 1 if zoom else 3)
+    save(fig, ax, "fleet_power_event_plot" + ("_avg" if avg else ""), 3)
 
 
 def plot_active_units():
@@ -243,7 +263,7 @@ def plot_active_units():
 
 def plot_unit_status(df, case):
     w = df[(df["Time"] >= dispatch_t) & (df["Time"] <= event_end)]
-    running = w[w[WH] > ON_KW].groupby("Time").size().reindex(sorted(w["Time"].unique()), fill_value=0)
+    running = w[w[POWER].abs() > ON_KW].groupby("Time").size().reindex(sorted(w["Time"].unique()), fill_value=0)
     fig, ax = plt.subplots(figsize=(10, 5))
     ax2 = ax.twinx()
     ax.plot(running.index, running.values, color="#133CAD", linewidth=1.3, label=f'Consuming power ({case.lower()})')
@@ -265,29 +285,20 @@ units.to_csv(run_file("_unit_metrics.csv"), index=False)
 
 plot_fleet_power_zoom()
 plot_fleet_power_day()
-plot_change(zoom=False)
-plot_change(zoom=True)
+plot_fleet_power_zoom(avg=True)
+plot_fleet_power_day(avg=True)
 plot_active_units()
 plot_unit_status(base, "Baseline")
 plot_unit_status(ctrl, "Controlled")
 
 n_dispatched = units["Home"].nunique()
 max_active = log.loc[(log["Time"] >= dispatch_t) & (log["Time"] <= event_end), "Active_Count"].max()
-t_reach, t_hold, pct_band = timing_stats()
+peak_kw, peak_t, hold_min = peak_hold_stats()
 event_kwh = change[in_event].sum() * dt_hr
 base_event_kwh = base_fleet[in_event].sum() * dt_hr
 after_event_min = change[change.index >= event_end].min()
 # CF(t) = sum of P_i(t) over the units able to respond / (P_rated * N), from the baseline.
-if SIGN < 0:
-    # INC: only units consuming power can shed, so P_i is their baseline power.
-    able = base[WH] > ON_KW
-    cf = base[WH].where(able, 0).groupby(base["Time"]).sum() / (P_RATED_KW * N)
-    CF_RULE = f"units consuming power (> {ON_KW} kW)"
-else:
-    # DEC: idle units with tank below setpoint - deadband can load up, so P_i is their headroom (P_rated - P).
-    able = (base[WH] <= ON_KW) & (base["Hot Water Outlet Temperature (C)"] < LOAD_SETPOINT_C - LOAD_DEADBAND_C)
-    cf = (P_RATED_KW - base[WH]).where(able, 0).groupby(base["Time"]).sum() / (P_RATED_KW * N)
-    CF_RULE = f"idle units with tank < {LOAD_SETPOINT_C - LOAD_DEADBAND_C:.1f} C"
+cf, CF_RULE = cf_baseline(base)
 # Controlled CF(t) = fleet delta_P(t) / (P_rated * N), from the controlled test.
 cf_ctrl = change / (P_RATED_KW * N)
 run_base, run_ctrl = avg_running(base), avg_running(ctrl)
@@ -301,29 +312,32 @@ else:
     first_lines = ["No unit responded"]
 
 lines = [
-    f"FLC {MODE} -- Results Summary",
+    f"FLC {LOAD_NAME} {MODE} (level {config.get('level', '?')}) -- Results Summary",
     "=" * 70,
     f"Test: {test_name}",
     f"Fleet size: {N} homes",
     f"Event: {dispatch_t} to {event_end}",
     f"Target: {TARGET_KW} kW (band +/- {BAND_KW} kW)",
+    f"Service duration: {(event_end - dispatch_t).total_seconds() / 3600:g} h",
+    f"Control level: {config.get('level', '?')}"
+    + (f" (setpoint {config['level_setpoint_f']} F, deadband {config['level_deadband_f']} F)"
+       if "level_setpoint_f" in config else ""),
     "",
     "--- Dispatch ---",
     f"Units dispatched: {n_dispatched} / {N} ({n_dispatched / N * 100:.1f}%)",
     f"Units never dispatched: {N - n_dispatched}",
-    f"Commands sent: {len(units)} ({len(units) / max(n_dispatched, 1):.2f} per dispatched unit)",
     f"Max simultaneous units in {STATE}: {max_active} ({max_active / N * 100:.1f}% of fleet)",
     "",
     "--- Timing ---",
-    f"Time to reach target: {t_reach:.1f} min after dispatch" if t_reach is not None
-    else "Time to reach target: target - band was never reached",
-    f"Time fleet held target (continuous): {t_hold:.1f} min" if t_hold is not None
-    else "Time fleet held target (continuous): n/a",
-    f"% of time in band (from first reaching target): {pct_band:.1f}%",
+    f"Peak {AVG_MIN}-min average {CHANGE_NAME.lower()}: {peak_kw:.3f} kW "
+    f"at {peak_t:%H:%M} ({(peak_t - dispatch_t).total_seconds() / 60:.0f} min after dispatch)",
+    f"Time held at >= {HOLD_FRACTION * 100:.0f}% of that peak (continuous): {hold_min:.1f} min",
     f"All units back to idle at: {all_back_t}",
     "",
     f"--- Fleet {CHANGE_NAME.lower()} (event window) ---",
     f"Average: {change[in_event].mean():.3f} kW",
+    f"Average after the {RAMP_MIN:g}-min ramp (hold period): {change[in_hold].mean():.3f} kW",
+    "Time held at >= 90%% of that average (15-min average): %g min longest unbroken, %g of %g min in total" % hold_time(),
     f"Minimum: {change[in_event].min():.3f} kW",
     f"Maximum: {change[in_event].max():.3f} kW",
     f"Energy: {event_kwh:.3f} kWh ({event_kwh / base_event_kwh * 100:.1f}% of baseline energy)",

@@ -20,6 +20,15 @@ from ochre.utils.schedule import ALL_SCHEDULE_NAMES
 from run_context import save_filename, save_input_folder
 
 #########################################
+# PATHS
+#########################################
+
+WORKING_DIR = os.path.dirname(os.path.abspath(__file__))
+WEATHER_FILE = os.path.join(WORKING_DIR, "Weather", "USA_OR_Portland.Intl.AP.726980_TMY3.epw")
+XML_NAME = "home.xml"
+SCHEDULE_NAME = "in.schedules.csv"
+
+#########################################
 # USER SETTINGS
 #########################################
 
@@ -28,7 +37,7 @@ filename = os.environ.get('OCHRE_FILENAME', 'FLC_DEC_Test')
 PIPELINE = "FLC_DEC"
 
 #"HPWH 50 Input Files", "HPWH 66 Input Files/bldg", "HPWH 80 Input Files", "HPWH All Input Files/bldg"
-INPUT_FOLDER = "HPWH 50 Input Files"
+INPUT_FOLDER = "HPWH All Input Files"
 
 # Day 1 is warm-up, the event happens on day 2.
 START = dt.datetime(2018, 1, 11, 0, 0)
@@ -44,16 +53,8 @@ if 'reserve_event' not in globals():
 TARGET_KW = float(os.environ.get('OCHRE_TARGET_DELTA_KW', 500.0))
 BAND_KW = float(os.environ.get('OCHRE_BAND_KW', 0.5))
 
-# Tank temperatures (F): baseline setpoint/deadband, SHED (parking) setpoint/deadband, initial.
-BASELINE_SETPOINT_F = 130
-BASELINE_DEADBAND_F = 7
-SHED_SETPOINT_F = 126
-SHED_DEADBAND_F = 10
-INIT_TEMP_F = 128
-
-# A LOAD unit leaves LOAD once its upper tank temperature reaches this (C).
-MAX_TANK_TEMP_C = 60
-HP_DUTY_CYCLE_LOAD = 1.0
+# Control level sent to dispatched units: "LOAD" (Load Up) or "ALU" (Advanced Load Up).
+LEVEL = os.environ.get('OCHRE_LEVEL', 'LOAD')
 
 # Dispatch settings (same values as the IEEE study).
 IDLE_THRESHOLD_KW = 0.1          # a new unit is only dispatched if idle in its baseline right now
@@ -67,16 +68,11 @@ RELEASE_GROUP_SIZE = 20          # after the event, units go back to idle in gro
 RELEASE_GROUP_SPACING_MIN = 15   # minutes between release groups
 
 #########################################
-# PATHS AND DERIVED VALUES
+# DERIVED VALUES
 #########################################
 
-WORKING_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_DIR = os.path.join(WORKING_DIR, INPUT_FOLDER, "bldg")
-WEATHER_FILE = os.path.join(WORKING_DIR, "Weather", "USA_OR_Portland.Intl.AP.726980_TMY3.epw")
 RESULTS_DIR = os.path.join(WORKING_DIR, "Ready_data", filename)
-XML_NAME = "home.xml"
-SCHEDULE_NAME = "in.schedules.csv"
-WH_POWER = "Water Heating Electric Power (kW)"
 
 EVENT_DATE = (START + dt.timedelta(days=DURATION_DAYS - 1)).date()
 dispatch_t = pd.to_datetime(f"{EVENT_DATE} {reserve_event['dispatch_time']}")
@@ -90,15 +86,33 @@ def f_to_c(temp_f):
 def f_to_c_delta(delta_f):
     return delta_f * 5 / 9
 
+# OCHRE seeds the global random generator while building a Dwelling, so only one is built at a time.
+_dwelling_lock = threading.Lock()
+
+#########################################
+# DEVICE SETTINGS
+#########################################
+
+WH_POWER = "Water Heating Electric Power (kW)"
+
+# Tank temperatures (F): baseline setpoint/deadband, SHED (parking) setpoint/deadband, initial.
+BASELINE_SETPOINT_F = 130
+BASELINE_DEADBAND_F = 7
+SHED_SETPOINT_F = 126
+SHED_DEADBAND_F = 10
+INIT_TEMP_F = 128
+
+MAX_TANK_TEMP_C = 60             # equipment limit (140 F)
+# A dispatched unit runs the heat pump until its upper tank temperature reaches the level's temperature (F).
+LEVELS = {"LOAD": 130, "ALU": 140}
+LOAD_TEMP_C = f_to_c(LEVELS[LEVEL])
+HP_DUTY_CYCLE_LOAD = 1.0
 
 BASELINE_CTRL = {"Water Heating": {"Setpoint": f_to_c(BASELINE_SETPOINT_F),
                                    "Deadband": f_to_c_delta(BASELINE_DEADBAND_F), "Load Fraction": 1}}
 SHED_CTRL = {"Water Heating": {"Setpoint": f_to_c(SHED_SETPOINT_F),
                                "Deadband": f_to_c_delta(SHED_DEADBAND_F), "Load Fraction": 1}}
 LOAD_CTRL = {"Water Heating": {"HP Duty Cycle": HP_DUTY_CYCLE_LOAD, "Load Fraction": 1}}
-
-# OCHRE seeds the global random generator while building a Dwelling, so only one is built at a time.
-_dwelling_lock = threading.Lock()
 
 #########################################
 # HELPERS
@@ -168,7 +182,7 @@ def drop_first_day(df):
 #########################################
 
 def run_baseline(home_path):
-    dwelling = make_dwelling(home_path, "HPWH Baseline")
+    dwelling = make_dwelling(home_path, f"{filename} Baseline")
     for _ in dwelling.sim_times:
         dwelling.update(control_signal=BASELINE_CTRL)
     df, _, _ = dwelling.finalize()
@@ -191,7 +205,7 @@ def load_cached_baseline(home_path):
 #########################################
 
 def run_until_dispatch(home_path):
-    dwelling = make_dwelling(home_path, "HPWH Controlled")
+    dwelling = make_dwelling(home_path, f"{filename} Controlled")
     wh = dwelling.get_equipment_by_end_use('Water Heating')
     sim_times = list(dwelling.sim_times)
     temp_log = []
@@ -250,7 +264,7 @@ def run_dispatch(units, base_kw):
 
         # 1) LOAD units that reached the max tank temperature go to SHED (during the event) or idle (after).
         for n in names:
-            if state[n] == "load" and upper_temp[n] >= MAX_TANK_TEMP_C:
+            if state[n] == "load" and upper_temp[n] >= LOAD_TEMP_C:
                 end_load(n, "shed" if in_event else "idle", t, "max_temp")
 
         # 2) At the event end, schedule every unit still out (LOAD or SHED) to go back to idle in groups.
@@ -370,6 +384,86 @@ def finalize_home(unit, df_base_full):
 # MAIN
 #########################################
 
+#########################################
+# CONSOLE: one progress bar and nothing else; Ctrl+C quits at once
+#########################################
+
+import sys
+import signal
+import warnings
+from tqdm import tqdm
+from ochre.Simulator import Simulator
+
+warnings.filterwarnings("ignore")
+Simulator.print = lambda self, *msg: None               # OCHRE status lines and warnings
+signal.signal(signal.SIGINT, lambda *a: os._exit(130))  # quit without waiting for worker threads
+STEPS = int(dt.timedelta(days=DURATION_DAYS) / dt.timedelta(minutes=T_RES))  # time steps in one home run
+BAR = tqdm(total=0, desc="Simulation", bar_format="{l_bar}{bar}| {elapsed}<{remaining}", file=sys.__stderr__,
+           ncols=min(80, shutil.get_terminal_size().columns - 1), mininterval=1)  # narrower than the window, so it never wraps
+
+
+class _Console:
+    """Only this script's prints are shown (above the bar); OCHRE's prints and 'Baseline skipped' lines are dropped."""
+    def write(self, text):
+        from_script = sys._getframe(1).f_globals.get("__name__") == "__main__"
+        if from_script and text.strip() and not text.startswith("Baseline skipped"):
+            tqdm.write(text.rstrip("\n"), file=sys.__stderr__)  # same stream as the bar, so it redraws below
+
+    def flush(self):
+        sys.__stdout__.flush()
+
+
+def _as_completed(futures):
+    """concurrent.futures.as_completed that wakes every 0.5 s, so Windows sees Ctrl+C."""
+    pending = set(futures)
+    while pending:
+        done, pending = concurrent.futures.wait(pending, timeout=0.5, return_when=concurrent.futures.FIRST_COMPLETED)
+        yield from done
+
+
+# Progress counts home time steps: each home has a baseline run and a controlled run of STEPS each.
+_update, _find_homes, _load_cached = Dwelling.update, find_homes, load_cached_baseline
+_run_baseline, _finalize_home = run_baseline, finalize_home
+
+
+def _update_counted(self, *args, **kwargs):
+    if "control_signal" in kwargs:  # our steps only, not OCHRE's initialization
+        BAR.update(1)
+    return _update(self, *args, **kwargs)
+
+
+def find_homes(base_dir):
+    homes = _find_homes(base_dir)
+    BAR.total = 2 * STEPS * len(homes)
+    return homes
+
+
+def load_cached_baseline(home_path):
+    df = _load_cached(home_path)
+    if df is not None:
+        BAR.update(STEPS)  # a reused baseline counts as done
+    return df
+
+
+def run_baseline(home_path):
+    try:
+        return _run_baseline(home_path)
+    except Exception:
+        BAR.update(2 * STEPS)  # a skipped home has no baseline or controlled run
+        raise
+
+
+def finalize_home(*args):
+    BAR.n = BAR.total  # all simulation steps are done once finalizing starts
+    BAR.close()
+    return _finalize_home(*args)
+
+
+Dwelling.update = _update_counted
+concurrent.futures.as_completed = _as_completed
+sys.stdout = _Console()
+
+
 if __name__ == "__main__":
     save_filename(filename, pipeline=PIPELINE)
     save_input_folder(INPUT_FOLDER, pipeline=PIPELINE)
@@ -380,7 +474,7 @@ if __name__ == "__main__":
 
     homes = find_homes(INPUT_DIR)
     print(f"Found {len(homes)} homes in {INPUT_DIR}")
-    print(f"Target: {TARGET_KW} +/- {BAND_KW} kW added load, event {dispatch_t} to {event_end}")
+    print(f"Level {LEVEL}: target {TARGET_KW} +/- {BAND_KW} kW added load, event {dispatch_t} to {event_end}")
 
     # Baseline: reuse saved results if FLC_SKIP_BASELINE_SIM=1, otherwise simulate.
     baselines = {}
@@ -434,7 +528,8 @@ if __name__ == "__main__":
 
     # Save the run's files.
     config = {**reserve_event, "dispatch_start": str(dispatch_t), "event_end": str(event_end),
-              "target_kw": TARGET_KW, "band_kw": BAND_KW, "max_tank_temp_c": MAX_TANK_TEMP_C,
+              "target_kw": TARGET_KW, "band_kw": BAND_KW, "level": LEVEL, "load_temp_c": LOAD_TEMP_C,
+              "max_tank_temp_c": MAX_TANK_TEMP_C,
               "input_folder": INPUT_FOLDER, "n_homes": len(units)}
     with open(os.path.join(RESULTS_DIR, filename + "_config.json"), "w") as f:
         json.dump(config, f, indent=2)
