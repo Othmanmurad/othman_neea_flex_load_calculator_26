@@ -36,7 +36,7 @@ SCHEDULE_NAME = "in.schedules.csv"
 #########################################
 
 # Test name; each test gets its own folder in Ready_data.
-filename = os.environ.get('OCHRE_FILENAME', 'FLC_HEAT_DEC_Max_LU')
+filename = os.environ.get('OCHRE_FILENAME', 'FLC_HEAT_DEC_Max_ALU')
 PIPELINE = "FLC_HEAT_DEC"
 LOAD_NAME = "HEAT"
 
@@ -60,7 +60,7 @@ BAND_KW = float(os.environ.get('OCHRE_BAND_KW', 0.5))
 SIGN = 1  # fleet change = SIGN * (controlled - baseline), positive when the fleet is doing its job
 
 # Control level sent to dispatched units: "LOAD" or "ALU".
-LEVEL = os.environ.get('OCHRE_LEVEL', 'LOAD')
+LEVEL = os.environ.get('OCHRE_LEVEL', 'ALU')
 
 # Dispatch settings (same logic as the HPWH tests).
 EXPECTED_KW_PER_UNIT = 4.0  # assumed change per dispatched unit at the default level, used to size each batch
@@ -141,7 +141,12 @@ LEVEL_SETPOINT_F, LEVEL_DEADBAND_F = LEVELS[LEVEL]
 RESPONSE_MIN_S = HVAC_RESPONSE_MIN
 RESPONSE_MAX_S = HVAC_RESPONSE_MAX
 
-EQUIPMENT_ARGS = {}
+# Backup electric resistance heater of the ASHP (10.5 kW in every home): 1 = enabled, 0 = disabled.
+# Applies to both the baseline and the controlled run. Turn FLC_SKIP_BASELINE_SIM off after changing it.
+BACKUP_HEAT = int(os.environ.get('OCHRE_BACKUP_HEAT', 1))
+
+# Disabled = backup lockout temperature far below any outdoor temperature, so OCHRE never turns it on.
+EQUIPMENT_ARGS = {} if BACKUP_HEAT else {"ASHP Heater": {"Backup Lockout Temperature (C)": -1000}}
 DWELLING_ARGS = {"Envelope": {"initial_temp_setpoint": f_to_c(HEAT_TinitF)}}  # starting indoor temperature
 
 
@@ -154,7 +159,8 @@ def setpoint_ctrl(setpoint_f, deadband_f):
 BASELINE_CTRL = setpoint_ctrl(HEAT_TbaselineF, HEAT_TdeadbandF)
 LEVEL_CTRL = setpoint_ctrl(LEVEL_SETPOINT_F, LEVEL_DEADBAND_F)
 CONFIG_EXTRA = {"level_setpoint_f": LEVEL_SETPOINT_F, "level_deadband_f": LEVEL_DEADBAND_F,
-                "baseline_setpoint_f": HEAT_TbaselineF, "baseline_deadband_f": HEAT_TdeadbandF}
+                "baseline_setpoint_f": HEAT_TbaselineF, "baseline_deadband_f": HEAT_TdeadbandF,
+                "backup_heat": BACKUP_HEAT}
 
 
 #########################################

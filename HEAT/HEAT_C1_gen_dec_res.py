@@ -18,9 +18,9 @@ from run_context import load_filename
 
 LOAD_NAME = "HEAT"
 PIPELINE = "FLC_HEAT_DEC"
-TEST_NAME = "FLC_HEAT_DEC_Max_LU"  # test folder in Ready_data to analyse; "" = the last test simulated
-MODE = "DEC - Load-Up"
-STATE = "LOAD"                 # the reserve state a dispatched unit is commanded into
+TEST_NAME = "FLC_HEAT_DEC_Max_ALU"  # test folder in Ready_data to analyse; "" = the last test simulated
+MODE = "DEC - ALU"
+STATE = "ALU"                 # the reserve state a dispatched unit is commanded into
 SIGN = 1                       # change = SIGN * (controlled - baseline), so it is positive when working
 CHANGE_NAME = "Added load"
 CHANGE_YLABEL = "Change in consumption vs. baseline (kW)"
@@ -323,6 +323,8 @@ lines = [
     f"Control level: {config.get('level', '?')}"
     + (f" (setpoint {config['level_setpoint_f']} F, deadband {config['level_deadband_f']} F)"
        if "level_setpoint_f" in config else ""),
+    # tests run before the BACKUP_HEAT switch existed always had the backup heater enabled
+    f"Backup heating element: {'enabled' if config.get('backup_heat', 1) else 'disabled'}",
     "",
     "--- Dispatch ---",
     f"Units dispatched: {n_dispatched} / {N} ({n_dispatched / N * 100:.1f}%)",
