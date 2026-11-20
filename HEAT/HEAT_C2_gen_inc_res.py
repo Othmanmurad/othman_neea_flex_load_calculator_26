@@ -312,6 +312,8 @@ lines = [
     f"Control level: {config.get('level', '?')}"
     + (f" (setpoint {config['level_setpoint_f']} F, deadband {config['level_deadband_f']} F)"
        if "level_setpoint_f" in config else ""),
+    # tests run before the BACKUP_HEAT switch existed always had the backup heater enabled
+    f"Backup heating element: {'enabled' if config.get('backup_heat', 1) else 'disabled'}",
     "",
     "--- Dispatch ---",
     f"Units dispatched: {n_dispatched} / {N} ({n_dispatched / N * 100:.1f}%)",
