@@ -30,6 +30,9 @@ POWER = "HVAC Cooling Electric Power (kW)"
 DEVICE_LABEL = "AC"        # used in plot titles
 ON_KW = 0.1                     # a unit counts as running when |power| is above this
 P_RATED_KW = 3.0               # assumed rated AC power per unit (units differ by home)
+UNIT_STATE = "Temperature - Indoor (C)"  # state shown in the single-unit plot
+UNIT_STATE_LABEL = "Indoor temperature (F)"
+UNIT_STATE_CONVERT = lambda s: s * 9 / 5 + 32  # C -> F
 PLOT_MARGIN_HR = 2.0            # hours shown before and after the event in the zoomed plots
 PLOT_AVG_MIN = 15              # averaging window (min) for the _avg plots
 AVG_MIN = 10                    # minutes in the rolling average used for the peak and hold time
@@ -277,6 +280,27 @@ def plot_unit_status(df, case):
     save(fig, ax, "baseline_status_plot" if case == "Baseline" else "control_status_plot", 3)
 
 
+def plot_single_unit(home):
+    """The first responding unit's power and state, baseline vs controlled, with its commanded time shaded (±2 hr of the event)."""
+    lo, hi = dispatch_t - pd.Timedelta(hours=PLOT_MARGIN_HR), event_end + pd.Timedelta(hours=PLOT_MARGIN_HR)
+    b = base[(base["Home"] == home) & base["Time"].between(lo, hi)].set_index("Time")
+    c = ctrl[(ctrl["Home"] == home) & ctrl["Time"].between(lo, hi)].set_index("Time")
+    fig, (ax, ax_s) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+    for df, label, color, style in ((b, 'Baseline', "#133CAD", '-'), (c, 'Controlled', "#ee5e0a", '--')):
+        ax.plot(df.index, df[POWER], color=color, linestyle=style, linewidth=1.3, label=label)
+        if UNIT_STATE in df.columns:  # some states are only logged in the controlled run
+            ax_s.plot(df.index, UNIT_STATE_CONVERT(df[UNIT_STATE]), color=color, linestyle=style, linewidth=1.3, label=label)
+    for k, ep in enumerate(episodes[episodes["Home"] == home].itertuples()):
+        for a in (ax, ax_s):
+            a.axvspan(ep.Command_Time, ep.End_Time, color='green', alpha=0.12, label=f'In {STATE}' if k == 0 and a is ax else None)
+    for a in (ax, ax_s):
+        mark_event(a)
+    ax.set(title=f'Single {DEVICE_LABEL} Operating Status ({MODE})', ylabel='Power (kW)')
+    ax_s.set(xlabel='Time', ylabel=UNIT_STATE_LABEL)
+    ax.legend(loc='upper left', fontsize=8)
+    save(fig, ax_s, "single_unit_status_plot", 1)
+
+
 #########################################
 # MAIN
 #########################################
@@ -305,6 +329,8 @@ cf_ctrl = change / (P_RATED_KW * N)
 run_base, run_ctrl = avg_running(base), avg_running(ctrl)
 flc, sample = flex_load_capacity()
 first = first_responder(units)
+if first is not None:
+    plot_single_unit(first["Home"])
 if first is not None:
     first_lines = [f"Home: {first['Home']} (command at {first['Command_Time']})",
                    f"Delta_P at response: {first['delta_p_kw']:.3f} kW",
