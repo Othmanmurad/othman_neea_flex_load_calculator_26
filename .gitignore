@@ -33,6 +33,8 @@ pes_paper/.last_*
 /Dryer/Ready_data/
 /ERWH/*Input Files*
 /AC/*Input Files*
+/AC/*.log
+/HEAT/*.log
 /HEAT/*Input Files*
 /EV/*Input Files*
 /Battery/*Input Files*
@@ -42,6 +44,8 @@ pes_paper/.last_*
 /HEAT/.last_*
 /EV/.last_*
 /Battery/.last_*
+/Battery/Battery Filtered/
+/Battery/*.log
 /Dryer/.last_*
 
 # FLC Combo (all loads together): results are simulation output.
