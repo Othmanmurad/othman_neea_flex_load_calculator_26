@@ -1,0 +1,18 @@
+# Battery: track the code (A/B/C scripts, run_context.py) and the weather file only.
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Inputs -- regenerable with Battery_A1/A2/A3
+/Battery Filtered/
+/*Input Files*/
+
+# Simulation results -- regenerable with the B and C scripts
+/Ready_data/
+
+# Run logs
+*.log
+
+# Local last-run state (see run_context.py)
+.last_*
